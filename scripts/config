@@ -218,12 +218,21 @@ try:
     if "blockdevices" in data:
         flatten(data["blockdevices"])
 
-    # Protect vital OS nodes
+    # Protect vital OS nodes, including Software RAID and LVM components
     for d in all_devices:
         mp = d.get("mountpoint") or ""
         fstype = d.get("fstype") or ""
-        if mp in ["/", "/boot"] or "SWAP" in mp or fstype == "LVM2_member":
-            parent_name = "".join([c for c in d.get("name", "") if c.isalpha()])
+        
+        if mp in ["/", "/boot"] or "SWAP" in mp or fstype in ["LVM2_member", "linux_raid_member"]:
+            name = d.get("name", "")
+            
+            # Handle NVMe naming convention syntax (e.g., nvme0n1p2 -> nvme0n1)
+            if "nvme" in name and "p" in name:
+                parent_name = name.split("p")[0]
+            # Handle standard drive syntax (e.g., sda2 -> sda)
+            else:
+                parent_name = "".join([c for c in name if c.isalpha()])
+                
             if parent_name:
                 system_parents.add(parent_name)
 
