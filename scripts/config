@@ -391,19 +391,25 @@ execute_disk_mount_sequence() {
     fi
 
     # =========================================================================
-    # REPLACED STEPS 6 & 7: Official YunoHost Multimedia Framework Integration
+    # Official YunoHost Multimedia Framework Integration
     # =========================================================================
     if [ "$apply_post_mount_permissions" = "true" ]; then
         ynh_print_info "Integrating with official YunoHost Multimedia framework..."
         
-        # This builds the group 'multimedia' if it doesn't exist, sets up user paths, etc.
+        # This builds the group 'multimedia' if it doesn't exist and builds /home/yunohost.multimedia
         ynh_multimedia_build_main_dir
 
-        # This automatically applies all ACL rules, sets standard masks, 
-        # and safely links your target path to /home/yunohost.multimedia/share/
         local folder_name
         folder_name=$(basename "$target_path")
-        ynh_multimedia_addfolder --source_dir="$target_path" --dest_dir="share/$folder_name"
+
+        # EXEMPTION: If the filesystem driver is NTFS, handle registration manually via symlink
+        if [[ "$fs_type" == "ntfs" ]] || [[ "$fs_type" == "ntfs-3g" ]]; then
+            ynh_print_info "NTFS filesystem detected. Registering via safe symlink to bypass POSIX ACL limitations..."
+            ln -sf "$target_path" "/home/yunohost.multimedia/share/$folder_name"
+        else
+            # For native Linux file systems (ext4, btrfs), use the official helper safely
+            ynh_multimedia_addfolder --source_dir="$target_path" --dest_dir="share/$folder_name"
+        fi
     fi
     # =========================================================================
 
