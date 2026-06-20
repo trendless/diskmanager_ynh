@@ -2,40 +2,68 @@
 
 version = "1.0"
 
-[main]
-name.en = "Storage & Mount Points"
+[mount]
+name.en = "Mount a Disk"
 
-    [main.view]
+    [mount.current_disks]
     name.en = "Current Disks"
     optional = true
 
-        [main.view.current_mounts]
+        [mount.current_disks.current_mounts]
         ask.en = "Active Mounts & Space"
         type = "alert"
         style = "info"
-        bind = "null"
 
-    [main.mount]
-    name.en = "Mount a New Disk"
+    [mount.mount_actions]
+    name.en = "Mount Configurations"
     optional = true
 
-        [main.mount.disk_uuid]
-        ask.en = "Select Disk (UUID)"
+        [mount.mount_actions.disk_uuid]
+        ask.en = "Select Disk to Mount"
         type = "select"
         choices = []
-        help = "Choose an available partition UUID discovered on your machine."
-        bind = "null"
+        help.en = "Choose an available partition or raw drive discovered on your machine."
 
-        [main.mount.mount_point]
+        [mount.mount_actions.mount_point]
         ask.en = "Mount Path"
         type = "string"
-        example = "/media/my_external_drive"
-        help = "The full absolute path where this disk should be mounted."
-        bind = "null"
+        example = "/mnt/my_external_drive"
+        help.en = "The full absolute path where this disk will be mounted"
 
-        [main.mount.yunohost_multimedia]
+        [mount.mount_actions.yunohost_multimedia]
         ask.en = "Optimize for YunoHost Multimedia?"
         type = "boolean"
         default = false
-        help = "Automatically adjusts permissions, ACLs, and symlinks so apps like Jellyfin or Nextcloud can read and write seamlessly."
-        bind = "null"
+        help.en = "Automatically adjusts permissions, ACLs, and symlinks so media apps can access files seamlessly"
+
+[unmount]
+name.en = "Unmount a Disk"
+
+    [unmount.unmount_actions]
+    name.en = "Safe Detachment"
+    optional = true
+
+        [unmount.unmount_actions.unmount_target_uuid]
+        ask.en = "Select Disk to Unmount"
+        type = "select"
+        choices = []
+        help.en = "Choose an actively managed partition to safely unmount and remove from system boot tracking"
+
+[erase]
+name.en = "Erase a Disk"
+
+    [erase.erase_actions]
+    name.en = "Factory Reset Storage"
+    optional = true
+
+        [erase.erase_actions.erase_target_node]
+        ask.en = "Select Disk to Destroy"
+        type = "select"
+        choices = []
+        help.en = "Choose a non-system disk node to wipe cleanly back to a raw factory footprint."
+
+        [erase.erase_actions.wipe_disk_trigger]
+        ask.en = "⚠️ CONFIRM PERMANENT DESTRUCTION?"
+        type = "boolean"
+        default = false
+        help.en = "You must check this box alongside selecting a target above to authorize a complete filesystem format"
