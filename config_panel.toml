@@ -1,0 +1,41 @@
+#:schema https://github.com/YunoHost/apps/raw/main/schemas/config_panel.v1.schema.json
+
+version = "1.0"
+
+[main]
+name.en = "Storage & Mount Points"
+
+    [main.view]
+    name.en = "Current Disks"
+    optional = true
+
+        [main.view.current_mounts]
+        ask.en = "Active Mounts & Space"
+        type = "alert"
+        style = "info"
+        bind = "null"
+
+    [main.mount]
+    name.en = "Mount a New Disk"
+    optional = true
+
+        [main.mount.disk_uuid]
+        ask.en = "Select Disk (UUID)"
+        type = "select"
+        choices = []
+        help = "Choose an available partition UUID discovered on your machine."
+        bind = "null"
+
+        [main.mount.mount_point]
+        ask.en = "Mount Path"
+        type = "string"
+        example = "/media/my_external_drive"
+        help = "The full absolute path where this disk should be mounted."
+        bind = "null"
+
+        [main.mount.yunohost_multimedia]
+        ask.en = "Optimize for YunoHost Multimedia?"
+        type = "boolean"
+        default = false
+        help = "Automatically adjusts permissions, ACLs, and symlinks so apps like Jellyfin or Nextcloud can read and write seamlessly."
+        bind = "null"

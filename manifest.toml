@@ -1,0 +1,35 @@
+#:schema https://raw.githubusercontent.com/YunoHost/apps/main/schemas/manifest.v2.schema.json
+
+packaging_format = 2
+
+id = "diskmanager"
+name = "YunoHost Disk Manager"
+description.en = "Manage additional disks and mount points directly from the YunoHost admin webui"
+description.fr = ""
+
+version = "0.0.1~ynh1"
+
+maintainers = ["trendless"]
+
+[upstream]
+# NB: Only the "license" key is mandatory. Remove entries for which there's no relevant data
+license = "free" # you can see the available licenses identifiers list here: https://spdx.org/licenses/
+code = "https://github.com/YunoHost-Apps/diskmanager_ynh"
+
+[integration]
+yunohost = ">= 12.1.17"
+helpers_version = "2.1"
+architectures = "all"
+multi_instance = false
+
+ldap = "not_relevant"
+
+sso = "not_relevant"
+
+disk = "50M"
+ram.build = "50M"
+ram.runtime = "50M"
+
+[install]
+
+[resources]

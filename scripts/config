@@ -1,0 +1,211 @@
+#!/bin/bash
+
+#=================================================
+# IMPORT GENERIC HELPERS
+#=================================================
+
+source /usr/share/yunohost/helpers
+
+ynh_abort_if_errors
+
+#=================================================
+# RETRIEVE ARGUMENTS
+#=================================================
+
+install_dir=$(ynh_app_setting_get --key=install_dir)
+
+#=================================================
+# GETTERS
+#=================================================
+
+get__current_mounts() {
+    local virtualization_type
+    virtualization_type=$(systemd-detect-virt 2>/dev/null)
+    
+    if [ "$virtualization_type" != "lxc" ] && grep -qa container=lxc /proc/1/environ 2>/dev/null; then
+        virtualization_type="lxc"
+    fi
+
+    local body=""
+
+    if [ "$virtualization_type" = "lxc" ]; then
+        body=$(cat << 'EOF'
+LXC CONTAINER DETECTED
+Directly mounting physical block devices (/dev/sdX) inside an unprivileged LXC container via fstab will fail due to strict kernel limitations.
+
+Recommended Workflow:
+1. Mount your storage drive directly on your physical Proxmox Host.
+2. Pass the directory into this container as a bind-mount via: Proxmox Web UI > Your LXC Container > Resources > Add > Mount Point.
+3. Once mapped, use this panel to view your drive or route it to the YunoHost Multimedia system.
+EOF
+)
+    else
+        local disk_json
+        disk_json=$(python3 -c "import json; from yunohost.storage import storage_disk_list; print(json.dumps(storage_disk_list(with_info=True, human_readable=True), indent=2))" 2>/dev/null)
+        
+        if [ -z "$disk_json" ] || [[ "$disk_json" == *'"disks": []'* ]]; then
+            disk_json='{ "info": "No physical disks detected by UDisks2 API." }'
+        fi
+        body=$(cat << EOF
+OFFICIAL STORAGE INVENTORY (CORE API):
+$disk_json
+EOF
+)
+    fi
+
+    local block_devices
+    block_devices=$(lsblk -o NAME,FSTYPE,SIZE,MOUNTPOINT,UUID 2>/dev/null)
+
+    local active_space
+    active_space=$(df -h -x tmpfs -x devtmpfs 2>/dev/null)
+
+    # Compile the layout into a completely safe flat text stream, 
+    # then shift EVERYTHING right by exactly 4 spaces so it forms 
+    # a single perfectly uniform, valid YAML block literal.
+    local raw_output
+    raw_output=$(cat << EOF
+$body
+
+=========================================
+DETECTED BLOCK PATHS & SYSTEM PARTITIONS:
+=========================================
+$block_devices
+
+=========================================
+ACTIVE MOUNT SPACE:
+=========================================
+$active_space
+EOF
+)
+
+    local safe_payload
+    safe_payload=$(echo "$raw_output" | sed 's/^/    /')
+
+    cat << EOF
+style: info
+ask:
+  en: |
+$safe_payload
+EOF
+}
+
+get__disk_uuid() {
+    local raw_uuids
+    raw_uuids=$(lsblk -rn -o UUID | grep -v '^$' | sort -u)
+
+    local choices="\"\":\"-- Select an available partition --\""
+    for uuid in $raw_uuids; do
+        local info
+        info=$(lsblk -no FSTYPE,SIZE,MOUNTPOINT -U "$uuid" 2>/dev/null | tr -s ' ')
+        
+        choices="${choices}, \"$uuid\":\"$uuid ($info)\""
+    done
+
+    echo "choices: { $choices }"
+    echo "value: \"\""
+}
+
+get__mount_point() {
+    echo ""
+}
+
+get__yunohost_multimedia() {
+    echo "false"
+}
+
+#=================================================
+# VALIDATORS
+#=================================================
+
+validate__mount_point() {
+    if [ -n "$mount_point" ]; then
+        [[ "$mount_point" == /* ]] || echo "Mount point must be an absolute path starting with /"
+    fi
+}
+
+validate__disk_uuid() {
+    if [ -z "$disk_uuid" ]; then
+        echo "Please pick a target hardware block UUID from the available selection list."
+    fi
+}
+
+#=================================================
+# SETTERS
+#=================================================
+
+set__mount_point() {
+    if [ -z "$disk_uuid" ] || [ -z "$mount_point" ]; then
+        return 0
+    fi
+
+    discovered_fs=$(blkid -o value -s TYPE -U "$disk_uuid" 2>/dev/null)
+
+    if [ -z "$discovered_fs" ]; then
+        ynh_print_error "Could not auto-detect a valid filesystem type for UUID $disk_uuid. Is the drive formatted?"
+        return 1
+    fi
+
+    ynh_print_info "Auto-detected filesystem type: $discovered_fs"
+    
+    local fs_type="$discovered_fs"
+    if [[ "$fs_type" == "ntfs" ]]; then
+        fs_type="ntfs-3g" # Swap for the read/write capable NTFS driver
+    fi
+
+    mkdir -p "$mount_point"
+
+    local mount_options="defaults,nofail,noatime"
+    local apply_post_mount_permissions="false"
+
+    if [ "$yunohost_multimedia" = "true" ]; then
+        if [[ "$fs_type" == "ext4" ]]; then
+            apply_post_mount_permissions="true"
+        else
+            # Universal non-Linux native structures require boot-time gid/mask injections
+            local multimedia_gid
+            multimedia_gid=$(getent group multimedia | cut -d: -f3)
+            mount_options="${mount_options},gid=${multimedia_gid},dmask=002,fmask=113"
+        fi
+    fi
+
+    cp /etc/fstab /etc/fstab.bak
+    
+    if grep -q "$disk_uuid" /etc/fstab; then
+        ynh_print_warn "UUID $disk_uuid already exists in /etc/fstab. Modification skipped."
+        return 0
+    fi
+
+    echo "UUID=$disk_uuid  $mount_point  $fs_type  $mount_options  0  2" >> /etc/fstab
+
+    ynh_print_info "Mounting drive..."
+    mount "$mount_point" || mount -a
+
+    if [ "$apply_post_mount_permissions" = "true" ]; then
+        ynh_print_info "Applying official YunoHost Multimedia ACL rules..."
+        local MEDIA_GROUP="multimedia"
+        
+        setfacl -RnL -m g:$MEDIA_GROUP:rwX,g::rwX,o:r-X "$mount_point"
+        setfacl -RnL -m d:g:$MEDIA_GROUP:rwX,g::rwX,o:r-X "$mount_point"
+        setfacl -RL -m m::rwx "$mount_point"
+    fi
+
+    # 7. Establish symbolic linking directly inside the multimedia repository map
+    if [ "$yunohost_multimedia" = "true" ]; then
+        local folder_name
+        folder_name=$(basename "$mount_point")
+        ynh_print_info "Linking partition path to YunoHost Shared Assets..."
+        ln -sfn "$mount_point" "/home/yunohost.multimedia/share/$folder_name"
+    fi
+}
+
+set__disk_uuid() {
+    : 
+}
+set__yunohost_multimedia() {
+    : 
+}
+
+#=================================================
+# RUNNING COMMAND
+#=================================================
+ynh_app_config_run "$1"
