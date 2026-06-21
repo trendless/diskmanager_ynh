@@ -76,6 +76,9 @@ try:
     result = subprocess.run(["lsblk", "-J", "-o", "NAME,TYPE,FSTYPE,SIZE,MOUNTPOINT,UUID"], capture_output=True, text=True)
     data = json.loads(result.stdout)
     
+    # Track environment virtualization
+    is_lxc = subprocess.run(["systemd-detect-virt"], capture_output=True, text=True).stdout.strip() == "lxc"
+    
     system_parents = set()
     all_devices = []
 
@@ -88,11 +91,16 @@ try:
     if "blockdevices" in data:
         flatten(data["blockdevices"])
 
+    # Protect vital OS nodes, including Software RAID and LVM components
     for d in all_devices:
         mp = d.get("mountpoint") or ""
         fstype = d.get("fstype") or ""
-        if mp in ["/", "/boot"] or "SWAP" in mp or fstype == "LVM2_member":
-            parent_name = "".join([c for c in d.get("name", "") if c.isalpha()])
+        if mp in ["/", "/boot"] or "SWAP" in mp or fstype in ["LVM2_member", "linux_raid_member"]:
+            name = d.get("name", "")
+            if "nvme" in name and "p" in name:
+                parent_name = name.split("p")[0]
+            else:
+                parent_name = "".join([c for c in name if c.isalpha()])
             if parent_name:
                 system_parents.add(parent_name)
 
@@ -107,7 +115,11 @@ try:
         if dtype in ["loop", "rom"] or fstype == "swap" or mp in ["/", "/boot"]:
             continue
         
-        parent_name = "".join([c for c in name if c.isalpha()])
+        if "nvme" in name and "p" in name:
+            parent_name = name.split("p")[0]
+        else:
+            parent_name = "".join([c for c in name if c.isalpha()])
+            
         if parent_name in system_parents:
             continue
 
@@ -125,6 +137,10 @@ try:
         
         # Case B: Completely raw disk or empty layout container
         elif dtype == "disk" and not fstype:
+            # SAFETY CHECK: If inside an LXC container, hide physical host hardware drives
+            if is_lxc and ("nvme" in name or name.startswith("sd")):
+                continue
+
             has_formatted_children = False
             if "children" in d:
                 has_formatted_children = any(child.get("uuid") or child.get("fstype") for child in d["children"])
@@ -206,6 +222,9 @@ try:
     result = subprocess.run(["lsblk", "-J", "-o", "NAME,TYPE,FSTYPE,SIZE,MOUNTPOINT"], capture_output=True, text=True)
     data = json.loads(result.stdout)
     
+    # Track environment virtualization
+    is_lxc = subprocess.run(["systemd-detect-virt"], capture_output=True, text=True).stdout.strip() == "lxc"
+    
     system_parents = set()
     all_devices = []
 
@@ -246,6 +265,10 @@ try:
         if dtype != "disk" or mp in ["/", "/boot"]:
             continue
         if name in system_parents:
+            continue
+            
+        # SAFETY CHECK: If inside an LXC container, hide physical host hardware drives
+        if is_lxc and ("nvme" in name or name.startswith("sd")):
             continue
 
         choices[f"/dev/{name}"] = f"RAW HARDWARE: /dev/{name} ({size}) - Wipes all internal partitions"
