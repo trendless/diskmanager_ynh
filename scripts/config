@@ -357,23 +357,24 @@ execute_disk_mount_sequence() {
         return 1
     fi
 
-    ynh_print_info "Target filesystem type discovered: $discovered_fs"
+    # Normalize to lowercase to avoid case-matching issues (e.g., NTFS vs ntfs)
+    local fs_type
+    fs_type=$(echo "$discovered_fs" | tr '[:upper:]' '[:lower:]')
+    ynh_print_info "Target filesystem type discovered: $fs_type"
     
-    local fs_type="$discovered_fs"
     if [[ "$fs_type" == "ntfs" ]]; then
         fs_type="ntfs-3g"
     fi
 
-    # 3. Guard against data shadowing: Fail if target directory exists and is not empty
+    # 3. Guard against data shadowing
     if [ -d "$target_path" ] && [ "$(ls -A "$target_path" 2>/dev/null)" ]; then
-        # Double check that it isn't already the active mount point for THIS run
         if ! mountpoint -q "$target_path"; then
-            ynh_print_error "Safety Abort: The directory '$target_path' already exists and contains data. Choosing this path would completely hide your existing files."
+            ynh_print_error "Safety Abort: The directory '$target_path' already exists and contains data."
             return 1
         fi
     fi
 
-    # 4. Create target directory (Safe to run now)
+    # 4. Create target directory
     mkdir -p "$target_path"
 
     # 5. Build configuration strings for mount options
@@ -382,14 +383,14 @@ execute_disk_mount_sequence() {
 
     if [ "$multimedia_enabled" = "true" ] || [ "$multimedia_enabled" = "1" ]; then
         apply_post_mount_permissions="true"
-    else
-        # Fix: Only apply FAT/NTFS style permissions masks if it is NOT a native Linux ext4 partition
-        if [[ "$fs_type" != "ext4" ]]; then
-            if getent group multimedia >/dev/null 2>&1; then
-                local multimedia_gid
-                multimedia_gid=$(getent group multimedia | cut -d: -f3)
-                mount_options="${mount_options},gid=${multimedia_gid},dmask=002,fmask=113"
-            fi
+    fi
+
+    # FIXED: Always append the group and permission masks for NTFS/FAT variants
+    if [[ "$fs_type" == "ntfs" ]] || [[ "$fs_type" == "ntfs-3g" ]] || [[ "$fs_type" == "vfat" ]]; then
+        if getent group multimedia >/dev/null 2>&1; then
+            local multimedia_gid
+            multimedia_gid=$(getent group multimedia | cut -d: -f3)
+            mount_options="${mount_options},gid=${multimedia_gid},dmask=002,fmask=113"
         fi
     fi
 
@@ -402,7 +403,6 @@ execute_disk_mount_sequence() {
         return 1
     fi
 
-    # Check if target path is already active to safely bypass on re-runs
     if mountpoint -q "$target_path"; then
         ynh_print_info "Drive is already mounted at $target_path. Proceeding with script configuration..."
     else
@@ -414,29 +414,28 @@ execute_disk_mount_sequence() {
     fi
 
     # =========================================================================
-    # Official YunoHost Multimedia Framework Integration
+    # FIXED: Official YunoHost Multimedia Framework Integration
     # =========================================================================
     if [ "$apply_post_mount_permissions" = "true" ]; then
         ynh_print_info "Integrating with official YunoHost Multimedia framework..."
         
-        # This builds the group 'multimedia' if it doesn't exist and builds /home/yunohost.multimedia
-        ynh_multimedia_build_main_dir
-
         local folder_name
         folder_name=$(basename "$target_path")
 
-        # EXEMPTION: If the filesystem driver is NTFS, handle registration manually via symlink
+        # EXEMPTION: If NTFS, skip ACL helpers entirely and symlink safely
         if [[ "$fs_type" == "ntfs" ]] || [[ "$fs_type" == "ntfs-3g" ]]; then
-            ynh_print_info "NTFS filesystem detected. Registering via safe symlink to bypass POSIX ACL limitations..."
+            ynh_print_info "NTFS filesystem detected. Creating symlink safely to completely bypass core setfacl helpers..."
+            mkdir -p "/home/yunohost.multimedia/share"
             ln -sf "$target_path" "/home/yunohost.multimedia/share/$folder_name"
         else
-            # For native Linux file systems (ext4, btrfs), use the official helper safely
+            # Native Linux filesystems safely call core tools
+            ynh_multimedia_build_main_dir
             ynh_multimedia_addfolder --source_dir="$target_path" --dest_dir="share/$folder_name"
         fi
     fi
     # =========================================================================
 
-    # 8. Commit to persistent storage registration (/etc/fstab) as the absolute final step
+    # 8. Commit to persistent storage registration (/etc/fstab)
     ynh_print_info "Committing mount settings to system storage registry (/etc/fstab)..."
     cp /etc/fstab /etc/fstab.bak
     
