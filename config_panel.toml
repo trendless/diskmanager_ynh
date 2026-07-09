@@ -10,7 +10,7 @@ name.en = "Mount a Disk"
     optional = true
 
         [mount.current_disks.current_mounts]
-        ask.en = "Active Mounts & Space"
+        ask.en = "Disks and Mounts"
         type = "alert"
         style = "info"
 
@@ -22,7 +22,7 @@ name.en = "Mount a Disk"
         ask.en = "Select Disk to Mount"
         type = "select"
         choices = []
-        help.en = "Choose an available partition or raw drive discovered on your machine."
+        help.en = "Choose an available partition or raw drive discovered on your machine"
 
         [mount.mount_actions.mount_point]
         ask.en = "Mount Path"
@@ -47,23 +47,23 @@ name.en = "Unmount a Disk"
         ask.en = "Select Disk to Unmount"
         type = "select"
         choices = []
-        help.en = "Choose an actively managed partition to safely unmount and remove from system boot tracking"
+        help.en = "Choose an actively-managed partition to safely unmount and remove from system boot tracking"
 
 [erase]
 name.en = "Erase a Disk"
 
     [erase.erase_actions]
-    name.en = "Factory Reset Storage"
+    name.en = "Factory Reset Disk"
     optional = true
 
         [erase.erase_actions.erase_target_node]
         ask.en = "Select Disk to Destroy"
         type = "select"
         choices = []
-        help.en = "Choose a non-system disk node to wipe cleanly back to a raw factory footprint."
+        help.en = "Choose a non-system disk to wipe"
 
         [erase.erase_actions.wipe_disk_trigger]
         ask.en = "⚠️ CONFIRM PERMANENT DESTRUCTION?"
         type = "boolean"
         default = false
-        help.en = "You must check this box alongside selecting a target above to authorize a complete filesystem format"
+        help.en = "You must check this box to authorize a complete disk format"
