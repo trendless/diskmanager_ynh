@@ -6,14 +6,24 @@
 
 source /usr/share/yunohost/helpers
 
-#ynh_print_info "Declaring files to be backed up..."
+ynh_print_info "Declaring files to be backed up..."
 
 #=================================================
-# BACKUP SYSTEM CONFIGURATION
+# BACKUP MANAGED DISK ENTRIES IN FSTAB
 #=================================================
+ynh_print_info "Backing up managed disk entries..."
+
+mkdir -p "$install_dir/config"
+disk_profile="$install_dir/config/managed_disks.fstab.bak"
+
+grep "# YNH_DISK_MANAGER" /etc/fstab > "$disk_profile" 2>/dev/null || true
+
+if [ ! -s "$disk_profile" ]; then
+    rm -f "$disk_profile"
+fi
 
 #=================================================
 # END OF SCRIPT
 #=================================================
 
-#ynh_print_info "Backup script completed for $app. (YunoHost will then actually copy those files to the archive)."
+ynh_print_info "Backup script completed for $app. (YunoHost will then actually copy those files to the archive)."

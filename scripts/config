@@ -19,24 +19,24 @@ install_dir=$(ynh_app_setting_get --key=install_dir)
 #=================================================
 
 get__current_mounts() {
-    # Isolate only lines we explicitly appended to /etc/fstab via this manager
     local managed_mounts
-    managed_mounts=$(grep -E "^UUID=" /etc/fstab | grep "nofail" 2>/dev/null)
+    managed_mounts=$(grep "# YNH_DISK_MANAGER" /etc/fstab 2>/dev/null)
 
-    local body="MANAGED DISKS & MOUNT POINTS:"
+    local body="Managed disks and mount points:"
     if [ -z "$managed_mounts" ]; then
         body=$(cat << EOF
 $body
-No external disks are currently managed by this application.
+No disks are currently managed by this application.
 EOF
 )
     else
         while read -r line; do
+            [[ "$line" =~ ^[[:space:]]*# ]] && [[ ! "$line" =~ ^UUID= ]] && continue
+
             local uuid_token mount_path fs_type options rest
             read -r uuid_token mount_path fs_type options rest <<< "$line"
             local clean_uuid="${uuid_token#UUID=}"
             
-            # Compute live remaining space if currently actively mapped
             local space_info="Not mounted"
             if mountpoint -q "$mount_path" 2>/dev/null; then
                 space_info=$(df -h "$mount_path" | tail -n 1 | tr -s ' ' | cut -d' ' -f4,5)
@@ -66,7 +66,6 @@ EOF
 }
 
 get__disk_uuid() {
-    # Dynamic Discoverer - Filters out System OS paths and targets unmounted storage/raw blocks
     local json_choices
     json_choices=$(python3 -c '
 import json, subprocess
@@ -76,7 +75,6 @@ try:
     result = subprocess.run(["lsblk", "-J", "-o", "NAME,TYPE,FSTYPE,SIZE,MOUNTPOINT,UUID"], capture_output=True, text=True)
     data = json.loads(result.stdout)
     
-    # Track environment virtualization
     is_lxc = subprocess.run(["systemd-detect-virt"], capture_output=True, text=True).stdout.strip() == "lxc"
     
     system_parents = set()
@@ -91,7 +89,6 @@ try:
     if "blockdevices" in data:
         flatten(data["blockdevices"])
 
-    # Protect vital OS nodes, including Software RAID and LVM components
     for d in all_devices:
         mp = d.get("mountpoint") or ""
         fstype = d.get("fstype") or ""
@@ -123,21 +120,16 @@ try:
         if parent_name in system_parents:
             continue
 
-        # Case A: Existing partition with data layout
         if uuid and fstype:
-            # Sub-case: The disk is already mounted right now (Active/Limbo state)
             if mp:
                 if mp.startswith("/mnt/"):
-                    choices[uuid] = f"Partition: {name} ({fstype}, {size}) - CURRENTLY MOUNTED at {mp}"
+                    choices[uuid] = f"Partition: {name} ({fstype}, {size}); currently mounted at {mp}"
                 else:
                     continue
-            # Sub-case: Available to be mounted
             else:
-                choices[uuid] = f"Partition: {name} ({fstype}, {size}) - Preserves Existing Data"
+                choices[uuid] = f"Partition: {name} ({fstype}, {size}); mount preserving existing data"
         
-        # Case B: Completely raw disk or empty layout container
         elif dtype == "disk" and not fstype:
-            # SAFETY CHECK: If inside an LXC container, hide physical host hardware drives
             if is_lxc and ("nvme" in name or name.startswith("sd")):
                 continue
 
@@ -146,7 +138,7 @@ try:
                 has_formatted_children = any(child.get("uuid") or child.get("fstype") for child in d["children"])
             
             if not has_formatted_children:
-                choices[f"/dev/{name}"] = f"RAW HARDWARE: /dev/{name} ({size}) - Auto-formats to ext4"
+                choices[f"/dev/{name}"] = f"Raw disk; /dev/{name} ({size}); format to ext4"
 
 except Exception:
     pass
@@ -159,14 +151,12 @@ print(f"choices: {json.dumps(choices)}")
 }
 
 get__unmount_target_uuid() {
-    # Gathers filesystems appended to /etc/fstab OR actively mounted under /mnt/ in limbo
     local json_choices
     json_choices=$(python3 -c '
 import json, subprocess
 
-choices = {"": "-- Select a Partition to Unmount --"}
+choices = {"": "-- Select a partition to unmount --"}
 
-# 1. First, catch everything registered in /etc/fstab
 try:
     with open("/etc/fstab", "r") as f:
         for line in f:
@@ -178,7 +168,6 @@ try:
 except Exception:
     pass
 
-# 2. Second, catch active system mounts under /mnt/ that missed fstab registration (limbo state)
 try:
     result = subprocess.run(["lsblk", "-J", "-o", "MOUNTPOINT,UUID,SIZE,NAME"], capture_output=True, text=True)
     data = json.loads(result.stdout)
@@ -198,7 +187,6 @@ try:
         name = d.get("name", "")
         size = d.get("size", "")
         
-        # If it is live mounted to /mnt/ and we havent already added it from fstab
         if uuid and mp.startswith("/mnt/") and uuid not in choices:
             choices[uuid] = f"Limbo Partition: {name} ({size}) mounted at {mp} [Not in fstab]"
 except Exception:
@@ -212,17 +200,15 @@ print(f"choices: {json.dumps(choices)}")
 }
 
 get__erase_target_node() {
-    # Filters out system drives and exposes ONLY parent disks for a clean hardware reset
     local json_choices
     json_choices=$(python3 -c '
 import json, subprocess
 
-choices = {"": "-- Select Disk to Destroy --"}
+choices = {"": "-- Select disk to destroy --"}
 try:
     result = subprocess.run(["lsblk", "-J", "-o", "NAME,TYPE,FSTYPE,SIZE,MOUNTPOINT"], capture_output=True, text=True)
     data = json.loads(result.stdout)
     
-    # Track environment virtualization
     is_lxc = subprocess.run(["systemd-detect-virt"], capture_output=True, text=True).stdout.strip() == "lxc"
     
     system_parents = set()
@@ -237,7 +223,6 @@ try:
     if "blockdevices" in data:
         flatten(data["blockdevices"])
 
-    # Protect vital OS nodes, including Software RAID and LVM components
     for d in all_devices:
         mp = d.get("mountpoint") or ""
         fstype = d.get("fstype") or ""
@@ -245,17 +230,14 @@ try:
         if mp in ["/", "/boot"] or "SWAP" in mp or fstype in ["LVM2_member", "linux_raid_member"]:
             name = d.get("name", "")
             
-            # Handle NVMe naming convention syntax (e.g., nvme0n1p2 -> nvme0n1)
             if "nvme" in name and "p" in name:
                 parent_name = name.split("p")[0]
-            # Handle standard drive syntax (e.g., sda2 -> sda)
             else:
                 parent_name = "".join([c for c in name if c.isalpha()])
                 
             if parent_name:
                 system_parents.add(parent_name)
 
-    # Expose only the root parent physical disks
     for d in data.get("blockdevices", []):
         name = d.get("name", "")
         dtype = d.get("type", "")
@@ -267,11 +249,10 @@ try:
         if name in system_parents:
             continue
             
-        # SAFETY CHECK: If inside an LXC container, hide physical host hardware drives
         if is_lxc and ("nvme" in name or name.startswith("sd")):
             continue
 
-        choices[f"/dev/{name}"] = f"RAW HARDWARE: /dev/{name} ({size}) - Wipes all internal partitions"
+        choices[f"/dev/{name}"] = f"Raw disk; /dev/{name} ({size}); wipes all internal partitions"
 except Exception:
     pass
 
@@ -299,7 +280,7 @@ validate__mount_point() {
 validate__disk_uuid() {
     if [ -n "$disk_uuid" ]; then
         if [[ "$disk_uuid" == /dev/* ]]; then
-            [ -b "$disk_uuid" ] || echo "The block path $disk_uuid does not exist or is unavailable."
+            [ -b "$disk_uuid" ] || echo "$disk_uuid does not exist or is unavailable."
         else
             blkid -U "$disk_uuid" >/dev/null 2>&1 || echo "This UUID does not appear to exist on the system."
         fi
@@ -307,7 +288,7 @@ validate__disk_uuid() {
 }
 
 #=================================================
-# SUB-ROUTINES FOR INDEPENDENT OPERATIONS
+# SETTERS
 #=================================================
 
 execute_disk_mount_sequence() {
@@ -315,10 +296,9 @@ execute_disk_mount_sequence() {
     local target_path="$2"
     local multimedia_enabled="$3"
 
-    # 1. Auto-Formatting Block
     if [[ "$target_uuid" == /dev/* ]]; then
         local raw_block="$target_uuid"
-        ynh_print_info "Raw disk detected ($raw_block). Preparing filesystem format..."
+        ynh_print_info "Raw disk detected ($raw_block); preparing filesystem format..."
 
         if ! parted -s "$raw_block" mklabel gpt 2>/dev/null; then
             ynh_print_error "Failed to create partition table on $raw_block."
@@ -345,39 +325,34 @@ execute_disk_mount_sequence() {
             ynh_print_error "Failed to retrieve the new UUID for $partition_path after formatting."
             return 1
         fi
-        ynh_print_info "Format complete! New Partition UUID: $target_uuid"
+        ynh_print_info "Format complete; new partition UUID: $target_uuid..."
     fi
 
-    # 2. Discover the file system type cleanly using the UUID
     local discovered_fs
     discovered_fs=$(blkid -o value -s TYPE -t UUID="$target_uuid" 2>/dev/null)
 
     if [ -z "$discovered_fs" ]; then
-        ynh_print_error "Could not auto-detect a valid filesystem type for UUID $target_uuid."
+        ynh_print_error "Could not detect a valid filesystem type for $target_uuid."
         return 1
     fi
 
-    # Normalize to lowercase to avoid case-matching issues (e.g., NTFS vs ntfs)
     local fs_type
     fs_type=$(echo "$discovered_fs" | tr '[:upper:]' '[:lower:]')
-    ynh_print_info "Target filesystem type discovered: $fs_type"
+    ynh_print_info "$fs_type filesystem discovered..."
     
     if [[ "$fs_type" == "ntfs" ]]; then
         fs_type="ntfs-3g"
     fi
 
-    # 3. Guard against data shadowing
     if [ -d "$target_path" ] && [ "$(ls -A "$target_path" 2>/dev/null)" ]; then
         if ! mountpoint -q "$target_path"; then
-            ynh_print_error "Safety Abort: The directory '$target_path' already exists and contains data."
+            ynh_print_error "Directory '$target_path' already exists and contains data; aborting."
             return 1
         fi
     fi
 
-    # 4. Create target directory
     mkdir -p "$target_path"
 
-    # 5. Build configuration strings for mount options
     local mount_options="defaults,nofail,noatime"
     local apply_post_mount_permissions="false"
 
@@ -385,7 +360,6 @@ execute_disk_mount_sequence() {
         apply_post_mount_permissions="true"
     fi
 
-    # FIXED: Always append the group and permission masks for NTFS/FAT variants
     if [[ "$fs_type" == "ntfs" ]] || [[ "$fs_type" == "ntfs-3g" ]] || [[ "$fs_type" == "vfat" ]]; then
         if getent group multimedia >/dev/null 2>&1; then
             local multimedia_gid
@@ -394,77 +368,65 @@ execute_disk_mount_sequence() {
         fi
     fi
 
-    # 6. Isolate device block node path
     local dev_node
     dev_node=$(blkid -U "$target_uuid" 2>/dev/null)
     
     if [ -z "$dev_node" ]; then
-        ynh_print_error "Could not isolate system device block node path for UUID $target_uuid."
+        ynh_print_error "Could not find $target_uuid."
         return 1
     fi
 
     if mountpoint -q "$target_path"; then
-        ynh_print_info "Drive is already mounted at $target_path. Proceeding with script configuration..."
+        ynh_print_info "Already mounted at $target_path; proceeding with configuration..."
     else
-        ynh_print_info "Testing drive mount..."
+        ynh_print_info "Testing mount..."
         if ! mount -o "$mount_options" "$dev_node" "$target_path"; then
-            ynh_print_error "Mount command execution failed. Refusing to alter configuration files."
+            ynh_print_error "Mount failed; no configuration changes written."
             return 1
         fi
     fi
 
-    # =========================================================================
-    # FIXED: Official YunoHost Multimedia Framework Integration
-    # =========================================================================
     if [ "$apply_post_mount_permissions" = "true" ]; then
-        ynh_print_info "Integrating with official YunoHost Multimedia framework..."
+        ynh_print_info "Integrating into YunoHost Multimedia..."
         
         local folder_name
         folder_name=$(basename "$target_path")
 
-        # EXEMPTION: If NTFS, skip ACL helpers entirely and symlink safely
         if [[ "$fs_type" == "ntfs" ]] || [[ "$fs_type" == "ntfs-3g" ]]; then
             ynh_print_info "NTFS filesystem detected. Creating symlink safely to completely bypass core setfacl helpers..."
             mkdir -p "/home/yunohost.multimedia/share"
             ln -sf "$target_path" "/home/yunohost.multimedia/share/$folder_name"
         else
-            # Native Linux filesystems safely call core tools
             ynh_multimedia_build_main_dir
             ynh_multimedia_addfolder --source_dir="$target_path" --dest_dir="share/$folder_name"
         fi
     fi
-    # =========================================================================
 
-    # 8. Commit to persistent storage registration (/etc/fstab)
-    ynh_print_info "Committing mount settings to system storage registry (/etc/fstab)..."
     cp /etc/fstab /etc/fstab.bak
     
     if grep -q "$target_uuid" /etc/fstab; then
-        ynh_print_warn "UUID $target_uuid already exists in /etc/fstab. Modification skipped."
+        ynh_print_warn "$target_uuid already exists in /etc/fstab. Modification skipped."
         return 0
     fi
 
-    echo "UUID=$target_uuid  $target_path  $fs_type  $mount_options  0  2" >> /etc/fstab
-    ynh_print_info "Storage mounting tasks completed successfully!"
+    echo "UUID=$target_uuid  $target_path  $fs_type  $mount_options  0  2 # YNH_DISK_MANAGER" >> /etc/fstab
+    ynh_print_info "Mounting completed successfully."
     return 0
 }
 
 execute_disk_unmount_sequence() {
     local target_uuid="$1"
-    ynh_print_info "Executing safe unmount and extraction routine for UUID: $target_uuid"
+    ynh_print_info "Unmount triggered for $target_uuid..."
 
     local dev_node
     dev_node=$(blkid -U "$target_uuid" 2>/dev/null)
     if [ -z "$dev_node" ] || [ ! -b "$dev_node" ]; then
-        ynh_print_warn "Could not map target UUID back to a live block device node. Proceeding with fstab purge anyway."
+        ynh_print_warn "Could not find $target_uuid; proceeding with unconfiguration anyway..."
     fi
 
     local target_path
     target_path=$(grep "UUID=$target_uuid" /etc/fstab | tr -s ' ' | cut -d' ' -f2)
-
-    # A. Unmount live active system hook using Lazy detaching (-l) to avoid "device busy" crashes
-    ynh_print_info "Safely disconnecting live system mounting blocks..."
-    
+  
     if [ -n "$dev_node" ]; then
         umount -l "$dev_node" 2>/dev/null || true
     fi
@@ -477,41 +439,37 @@ execute_disk_unmount_sequence() {
         rm -f "/home/yunohost.multimedia/share/$folder_name"
     fi
 
-    # B. Excise reference from permanent fstab storage tracking ledger
-    ynh_print_info "Purging registration footprint lines from /etc/fstab..."
+    ynh_print_info "Removing configuration from system..."
     cp /etc/fstab /etc/fstab.bak
     sed -i "/$target_uuid/d" /etc/fstab
 
-    ynh_print_info "Unmount operation completed successfully. Drive can now be safely disconnected."
+    ynh_print_info "Unmount completed successfully."
     return 0
 }
 
 execute_disk_wipe_sequence() {
     local raw_target="$1"
-    ynh_print_warn "DANGER: Complete destructive scrubbing sequence triggered for node: $raw_target"
+    ynh_print_warn "Complete wipe triggered for $raw_target."
 
     if [ ! -b "$raw_target" ]; then
-        ynh_print_error "Target parameter '$raw_target' does not map to a live hardware block node."
+        ynh_print_error "'$raw_target' cannot be found; it has either been disconnected or its identifier has changed."
         return 1
     fi
 
-    # B. Check for active mount assignments matching this target node before wiping
     local active_mount
     active_mount=$(lsblk -no MOUNTPOINT "$raw_target" | grep -v '^$' | head -n 1)
     if [ -n "$active_mount" ]; then
-        ynh_print_info "Unmounting active device tracks mapped to $active_mount..."
+        ynh_print_info "Unmounting $active_mount..."
         umount -f "$raw_target" 2>/dev/null
         umount -f "$active_mount" 2>/dev/null
     fi
 
-    # C. Wipe records across any linked fstab references by targeting path keywords
     local block_base
     block_base=$(basename "$raw_target")
     cp /etc/fstab /etc/fstab.bak
     sed -i "/$block_base/d" /etc/fstab
 
-    # D. Perform permanent signature scrubbing operations across block targets
-    ynh_print_info "Wiping data headers and partition maps from $raw_target..."
+    ynh_print_info "Wiping $raw_target..."
     local parent_disk
     parent_disk="/dev/$(lsblk -no PKNAME "$raw_target" | head -n 1)"
     [ "$parent_disk" = "/dev/" ] && parent_disk="$raw_target"
@@ -521,20 +479,18 @@ execute_disk_wipe_sequence() {
         wipefs -a "$parent_disk" 2>/dev/null
     fi
 
-    # Reinstall an empty, generic GPT structure to return the disk to standard factory raw storage state
     parted -s "$parent_disk" mklabel gpt 2>/dev/null
     udevadm settle
 
-    ynh_print_info "Erase operation complete! Target block has been returned to factory raw status."
+    ynh_print_info "Disk wipe complete."
     return 0
 }
 
 #=================================================
-# THE ROUTING DISPATCHER
+# 
 #=================================================
 
 process_tab_actions() {
-    # 1. Fetch values safely with fallback defaults to prevent unbound variable crashes
     local active_mount_point="${mount_point:-}"
     local active_wipe_trigger="${wipe_disk_trigger:-}"
     local active_erase_node="${erase_target_node:-}"
@@ -542,10 +498,8 @@ process_tab_actions() {
     local active_disk_uuid="${disk_uuid:-}"
     local active_multimedia="${yunohost_multimedia:-false}"
 
-    # Trim trailing slashes from path strings if passed by mistake
     [ -n "$active_mount_point" ] && active_mount_point="${active_mount_point%/}"
 
-    # ROUTE A: The User Executed an ERASE Action (Accepts "true" or "1")
     if [ "$active_wipe_trigger" = "true" ] || [ "$active_wipe_trigger" = "1" ]; then
         if [ -n "$active_erase_node" ]; then
             execute_disk_wipe_sequence "$active_erase_node"
@@ -553,13 +507,11 @@ process_tab_actions() {
         fi
     fi
 
-    # ROUTE B: The User Executed an UNMOUNT Action
     if [ -n "$active_unmount_uuid" ]; then
         execute_disk_unmount_sequence "$active_unmount_uuid"
         return $?
     fi
 
-    # ROUTE C: The User Executed a MOUNT Action
     if [ -n "$active_disk_uuid" ] && [ -n "$active_mount_point" ]; then
         execute_disk_mount_sequence "$active_disk_uuid" "$active_mount_point" "$active_multimedia"
         return $?
@@ -568,7 +520,6 @@ process_tab_actions() {
     return 0
 }
 
-# Keep empty stubs so YunoHost doesn't complain about missing setters
 set__mount_point() { :; }
 set__disk_uuid() { :; }
 set__unmount_target_uuid() { :; }
@@ -577,14 +528,11 @@ set__wipe_disk_trigger() { :; }
 set__yunohost_multimedia() { :; }
 
 #=================================================
-# RUNNING COMMAND
+# 
 #=================================================
 
-# 1. Let YunoHost save strings internally to its database (apply stage)
 ynh_app_config_run "$1"
 
-# 2. Intercept the execution loop during the "apply" step to trigger hardware routing
 if [ "$1" = "apply" ]; then
-    ynh_print_info "Parsing action matrix payload..."
     process_tab_actions
 fi

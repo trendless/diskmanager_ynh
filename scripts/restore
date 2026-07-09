@@ -7,6 +7,59 @@
 source /usr/share/yunohost/helpers
 
 #=================================================
+# RESTORE MANAGED DISK ENTRIES IN FSTAB
+#=================================================
+local disk_profile="$install_dir/config/managed_disks.fstab.bak"
+
+if [ -f "$disk_profile" ] && [ -s "$disk_profile" ]; then
+    ynh_print_info "Restoring managed disk entries..."
+    
+    # Secure native fstab rescue boundary point
+    cp /etc/fstab /etc/fstab.pre-restore.bak
+
+    while read -r line; do
+        [ -z "$line" ] && continue
+        [[ "$line" =~ ^[[:space:]]*# ]] && [[ ! "$line" =~ ^UUID= ]] && continue
+
+        local uuid_token mount_path fs_type options rest
+        read -r uuid_token mount_path fs_type options rest <<< "$line"
+        local clean_uuid="${uuid_token#UUID=}"
+
+        if grep -q "$clean_uuid" /etc/fstab; then
+            ynh_print_warn "Disk $clean_uuid is already mapped in /etc/fstab. Skipping entry..."
+            continue
+        fi
+
+        if ! blkid -U "$clean_uuid" >/dev/null 2>&1; then
+            ynh_print_error "Disk $clean_uuid not found; cannot automatically map to $mount_path..."
+            continue
+        fi
+
+        if [ ! -d "$mount_path" ]; then
+            mkdir -p "$mount_path"
+        fi
+
+        echo "$line" >> /etc/fstab
+
+        if mount "$mount_path"; then
+            ynh_print_info "Disk safely mounted and online"
+        else
+            ynh_print_warn "fstab record added, but direct execution of 'mount $mount_path' failed."
+        fi
+
+        if [[ "$options" == *"nofail"* ]]; then
+            local folder_name
+            folder_name=$(basename "$mount_path")
+            if [ -d "/home/yunohost.multimedia/share" ]; then
+                ynh_print_info "Re-linking $folder_name to YunoHost Multimedia..."
+                ln -sf "$mount_path" "/home/yunohost.multimedia/share/$folder_name"
+            fi
+        fi
+
+    done < "$disk_profile"
+fi
+
+#=================================================
 # END OF SCRIPT
 #=================================================
 
